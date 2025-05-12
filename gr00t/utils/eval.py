@@ -46,6 +46,8 @@ def calc_mse_for_single_trajectory(
     state_joints_across_time = []
     gt_action_joints_across_time = []
     pred_action_joints_across_time = []
+    right_images = []
+    top_images = []
 
     for step_count in range(steps):
         data_point = dataset.get_step_data(traj_id, step_count)
@@ -75,6 +77,12 @@ def calc_mse_for_single_trajectory(
                 )
                 pred_action_joints_across_time.append(concat_pred_action)
 
+            # Get video frames for both cameras
+            if "video.right" in data_point:
+                right_images.append(data_point["video.right"][0])
+            if "video.top" in data_point:
+                top_images.append(data_point["video.top"][0])
+
     # plot the joints
     state_joints_across_time = np.array(state_joints_across_time)
     gt_action_joints_across_time = np.array(gt_action_joints_across_time)
@@ -92,9 +100,28 @@ def calc_mse_for_single_trajectory(
     num_of_joints = state_joints_across_time.shape[1]
 
     if plot:
-        fig, axes = plt.subplots(nrows=num_of_joints, ncols=1, figsize=(8, 4 * num_of_joints))
+        # Create a figure with two subplots for the video frames
+        fig = plt.figure(figsize=(20, 10))
+        
+        # Plot the video frames
+        if right_images and top_images:
+            num_frames = min(len(right_images), len(top_images))
+            for i in range(num_frames):
+                ax1 = plt.subplot(2, num_frames, i + 1)
+                ax1.imshow(right_images[i])
+                ax1.set_title(f"Right Camera - Step {i * action_horizon}")
+                ax1.axis("off")
+                
+                ax2 = plt.subplot(2, num_frames, i + num_frames + 1)
+                ax2.imshow(top_images[i])
+                ax2.set_title(f"Top Camera - Step {i * action_horizon}")
+                ax2.axis("off")
+            
+            plt.tight_layout()
+            plt.show()
 
-        # Add a global title showing the modality keys
+        # Plot the joint angles
+        fig, axes = plt.subplots(nrows=num_of_joints, ncols=1, figsize=(8, 4 * num_of_joints))
         fig.suptitle(
             f"Trajectory {traj_id} - Modalities: {', '.join(modality_keys)}",
             fontsize=16,
@@ -119,4 +146,4 @@ def calc_mse_for_single_trajectory(
         plt.tight_layout()
         plt.show()
 
-    return mse
+    return mse, right_images, top_images, (state_joints_across_time, gt_action_joints_across_time, pred_action_joints_across_time)

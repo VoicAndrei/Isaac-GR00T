@@ -197,40 +197,43 @@ class GR00T_N1(PreTrainedModel):
         return backbone_inputs, action_inputs
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs):
-        tune_visual = kwargs.pop("tune_visual", True)
-        tune_llm = kwargs.pop("tune_llm", False)
-        tune_projector = kwargs.pop("tune_projector", True)
-        tune_diffusion_model = kwargs.pop("tune_diffusion_model", True)
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path,
+        tune_llm=None,
+        tune_visual=None,
+        tune_projector=None,
+        tune_diffusion_model=None,
+        **kwargs,
+    ):
+        """Load a pretrained model from a checkpoint."""
+        # Forward the relevant kwargs for model creation
+        kwargs["attn_implementation"] = "eager"  # Force eager implementation to avoid FlashAttention issues
+        
+        config = AutoConfig.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=True
+        )
 
-        print(f"Loading pretrained dual brain from {pretrained_model_name_or_path}")
-        print(f"Tune backbone vision tower: {tune_visual}")
-        print(f"Tune backbone LLM: {tune_llm}")
-        print(f"Tune action head projector: {tune_projector}")
-        print(f"Tune action head DiT: {tune_diffusion_model}")
+        # Override the tuning flags if provided
+        if tune_llm is not None:
+            config.backbone_cfg["tune_llm"] = tune_llm
+        if tune_visual is not None:
+            config.backbone_cfg["tune_visual"] = tune_visual
+        if tune_projector is not None:
+            config.action_head_cfg["tune_projector"] = tune_projector
+        if tune_diffusion_model is not None:
+            config.action_head_cfg["tune_diffusion_model"] = tune_diffusion_model
 
-        # get the current model path being downloaded
-        try:
-            # NOTE(YL) This downloads the model to the local cache and returns the local path to the model
-            # saved in ~/.cache/huggingface/hub/
-            local_model_path = snapshot_download(pretrained_model_name_or_path, repo_type="model")
-            # HFValidationError, RepositoryNotFoundError
-        except (HFValidationError, RepositoryNotFoundError):
-            print(
-                f"Model not found or avail in the huggingface hub. Loading from local path: {pretrained_model_name_or_path}"
-            )
-            local_model_path = pretrained_model_name_or_path
+        print(f"Tune backbone vision tower: {config.backbone_cfg['tune_visual']}")
+        print(f"Tune backbone LLM: {config.backbone_cfg['tune_llm']}")
+        print(f"Tune action head projector: {config.action_head_cfg['tune_projector']}")
+        print(f"Tune action head DiT: {config.action_head_cfg['tune_diffusion_model']}")
 
+        # Load the model
         pretrained_model = super().from_pretrained(
-            local_model_path, local_model_path=local_model_path, **kwargs
+            pretrained_model_name_or_path, config=config, **kwargs
         )
 
-        pretrained_model.backbone.set_trainable_parameters(
-            tune_visual=tune_visual, tune_llm=tune_llm
-        )
-        pretrained_model.action_head.set_trainable_parameters(
-            tune_projector=tune_projector, tune_diffusion_model=tune_diffusion_model
-        )
         return pretrained_model
 
 

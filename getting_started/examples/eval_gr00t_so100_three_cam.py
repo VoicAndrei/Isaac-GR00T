@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# SO100 Real Robot
+# SO100 Real Robot with Three Camera Support
 import time
 from contextlib import contextmanager
 
@@ -37,16 +37,23 @@ from tqdm import tqdm
 #################################################################################
 
 
-class SO100Robot:
-    def __init__(self, calibrate=False, enable_camera=False, camera_index=9):
+class SO100ThreeCamRobot:
+    def __init__(self, calibrate=False, enable_camera=False, camera_right_index=9, camera_top_index=3, camera_wrist_index=1):
         self.config = So100RobotConfig()
         self.calibrate = calibrate
         self.enable_camera = enable_camera
-        self.camera_index = camera_index
+        self.camera_right_index = camera_right_index
+        self.camera_top_index = camera_top_index
+        self.camera_wrist_index = camera_wrist_index
+        
         if not enable_camera:
             self.config.cameras = {}
         else:
-            self.config.cameras = {"webcam": OpenCVCameraConfig(camera_index, 30, 640, 480, "bgr")}
+            self.config.cameras = {
+                "right": OpenCVCameraConfig(camera_right_index, 30, 640, 480, "bgr"),
+                "top": OpenCVCameraConfig(camera_top_index, 30, 640, 480, "bgr"),
+                "wrist": OpenCVCameraConfig(camera_wrist_index, 30, 640, 480, "bgr")
+            }
         self.config.leader_arms = {}
 
         # remove the .cache/calibration/so100 folder
@@ -95,10 +102,19 @@ class SO100Robot:
         print("robot present position:", self.motor_bus.read("Present_Position"))
         self.robot.is_connected = True
 
-        self.camera = self.robot.cameras["webcam"] if self.enable_camera else None
-        if self.camera is not None:
-            self.camera.connect()
-        print("================> SO100 Robot is fully connected =================")
+        # Connect cameras
+        self.right_camera = self.robot.cameras.get("right") if self.enable_camera else None
+        self.top_camera = self.robot.cameras.get("top") if self.enable_camera else None
+        self.wrist_camera = self.robot.cameras.get("wrist") if self.enable_camera else None
+        
+        if self.right_camera is not None:
+            self.right_camera.connect()
+        if self.top_camera is not None:
+            self.top_camera.connect()
+        if self.wrist_camera is not None:
+            self.wrist_camera.connect()
+            
+        print("================> SO100 Robot with three cameras is fully connected =================")
 
     def set_so100_robot_preset(self):
         # Mode=0 for Position Control
@@ -150,11 +166,27 @@ class SO100Robot:
     def get_current_state(self):
         return self.get_observation()["observation.state"].data.numpy()
 
-    def get_current_img(self):
-        img = self.get_observation()["observation.images.webcam"].data.numpy()
-        # convert bgr to rgb
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        return img
+    def get_current_images(self):
+        """Get images from all three cameras"""
+        observation = self.get_observation()
+        images = {}
+        
+        if "observation.images.right" in observation:
+            right_img = observation["observation.images.right"].data.numpy()
+            # convert bgr to rgb
+            images["right"] = cv2.cvtColor(right_img, cv2.COLOR_BGR2RGB)
+        
+        if "observation.images.top" in observation:
+            top_img = observation["observation.images.top"].data.numpy()
+            # convert bgr to rgb
+            images["top"] = cv2.cvtColor(top_img, cv2.COLOR_BGR2RGB)
+            
+        if "observation.images.wrist" in observation:
+            wrist_img = observation["observation.images.wrist"].data.numpy()
+            # convert bgr to rgb
+            images["wrist"] = cv2.cvtColor(wrist_img, cv2.COLOR_BGR2RGB)
+            
+        return images
 
     def set_target_state(self, target_state: torch.Tensor):
         self.robot.send_action(target_state)
@@ -178,7 +210,7 @@ class SO100Robot:
 #################################################################################
 
 
-class Gr00tRobotInferenceClient:
+class Gr00tThreeCamInferenceClient:
     def __init__(
         self,
         host="localhost",
@@ -190,9 +222,18 @@ class Gr00tRobotInferenceClient:
         self.img_size = (480, 640)
         self.policy = ExternalRobotInferenceClient(host=host, port=port)
 
-    def get_action(self, img, state):
+    def get_action(self, images, state):
+        """
+        Get action from policy using images from all three cameras
+        
+        Args:
+            images: Dictionary with 'right', 'top', and 'wrist' camera images
+            state: Robot state
+        """
         obs_dict = {
-            "video.webcam": img[np.newaxis, :, :, :],
+            "video.right": images["right"][np.newaxis, :, :, :],
+            "video.top": images["top"][np.newaxis, :, :, :],
+            "video.wrist": images["wrist"][np.newaxis, :, :, :],
             "state.single_arm": state[:5][np.newaxis, :].astype(np.float64),
             "state.gripper": state[5:6][np.newaxis, :].astype(np.float64),
             "annotation.human.task_description": [self.language_instruction],
@@ -204,10 +245,12 @@ class Gr00tRobotInferenceClient:
 
     def sample_action(self):
         obs_dict = {
-            "video.webcam": np.zeros((1, self.img_size[0], self.img_size[1], 3), dtype=np.uint8),
+            "video.right": np.zeros((1, self.img_size[0], self.img_size[1], 3), dtype=np.uint8),
+            "video.top": np.zeros((1, self.img_size[0], self.img_size[1], 3), dtype=np.uint8),
+            "video.wrist": np.zeros((1, self.img_size[0], self.img_size[1], 3), dtype=np.uint8),
             "state.single_arm": np.zeros((1, 5)),
             "state.gripper": np.zeros((1, 1)),
-            "annotation.human.action.task_description": [self.language_instruction],
+            "annotation.human.task_description": [self.language_instruction],
         }
         return self.policy.get_action(obs_dict)
 
@@ -215,17 +258,24 @@ class Gr00tRobotInferenceClient:
 #################################################################################
 
 
-def view_img(img, img2=None):
+def view_multiple_cameras(images):
     """
-    This is a matplotlib viewer since cv2.imshow can be flaky in lerobot env
-    also able to overlay the image to ensure camera view is alligned to training settings
+    Display multiple camera views side by side without creating new windows each time
     """
-    plt.imshow(img)
-    if img2 is not None:
-        plt.imshow(img2, alpha=0.5)
-    plt.axis("off")
+    # Use a single figure that's reused
+    plt.figure(1, figsize=(15, 5))
+    plt.clf()  # Clear the current figure
+    
+    num_cameras = len(images)
+    for i, (camera_name, img) in enumerate(images.items()):
+        plt.subplot(1, num_cameras, i+1)
+        plt.imshow(img)
+        plt.title(camera_name)
+        plt.axis("off")
+        
+    plt.tight_layout()
+    plt.draw()
     plt.pause(0.001)  # Non-blocking show
-    plt.clf()  # Clear the figure for the next frame
 
 
 #################################################################################
@@ -241,34 +291,43 @@ if __name__ == "__main__":
         "--use_policy", action="store_true"
     )  # default is to playback the provided dataset
     parser.add_argument("--dataset_path", type=str, default=default_dataset_path)
-    parser.add_argument("--host", type=str, default="10.110.17.183")
+    parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--action_horizon", type=int, default=12)
-    parser.add_argument("--actions_to_execute", type=int, default=350)
-    parser.add_argument("--camera_index", type=int, default=9)
+    parser.add_argument("--actions_to_execute", type=int, default=300)
+    parser.add_argument("--camera_right_index", type=int, default=2)
+    parser.add_argument("--camera_top_index", type=int, default=0)
+    parser.add_argument("--camera_wrist_index", type=int, default=1)
     args = parser.parse_args()
 
     ACTIONS_TO_EXECUTE = args.actions_to_execute
     USE_POLICY = args.use_policy
-    ACTION_HORIZON = (
-        args.action_horizon
-    )  # we will execute only some actions from the action_chunk of 16
+    ACTION_HORIZON = args.action_horizon  # we will execute only some actions from the action_chunk of 16
     MODALITY_KEYS = ["single_arm", "gripper"]
 
     if USE_POLICY:
-        client = Gr00tRobotInferenceClient(
+        client = Gr00tThreeCamInferenceClient(
             host=args.host,
             port=args.port,
             language_instruction="Pick up the items from the white plate and place them in the black recepient.",
         )
 
-        robot = SO100Robot(calibrate=False, enable_camera=True, camera_index=args.camera_index)
+        robot = SO100ThreeCamRobot(
+            calibrate=False, 
+            enable_camera=True, 
+            camera_right_index=args.camera_right_index,
+            camera_top_index=args.camera_top_index,
+            camera_wrist_index=args.camera_wrist_index
+        )
+        
         with robot.activate():
             for i in tqdm(range(ACTIONS_TO_EXECUTE), desc="Executing actions"):
-                img = robot.get_current_img()
-                view_img(img)
+                images = robot.get_current_images()
+                view_multiple_cameras(images)
+                
                 state = robot.get_current_state()
-                action = client.get_action(img, state)
+                action = client.get_action(images, state)
+                
                 start_time = time.time()
                 for i in range(ACTION_HORIZON):
                     concat_action = np.concatenate(
@@ -277,49 +336,14 @@ if __name__ == "__main__":
                     )
                     assert concat_action.shape == (6,), concat_action.shape
                     robot.set_target_state(torch.from_numpy(concat_action))
-                    time.sleep(0.01)
+                    time.sleep(0.02)
 
-                    # get the realtime image
-                    img = robot.get_current_img()
-                    view_img(img)
+                    # get the realtime images
+                    images = robot.get_current_images()
+                    view_multiple_cameras(images)
 
                     # 0.05*16 = 0.8 seconds
                     print("executing action", i, "time taken", time.time() - start_time)
                 print("Action chunk execution time taken", time.time() - start_time)
     else:
-        # Test Dataset Source https://huggingface.co/datasets/youliangtan/so100_strawberry_grape
-        dataset = LeRobotDataset(
-            repo_id="youliangtan/so100_strawberry_grape",
-            root=args.dataset_path,
-        )
-
-        robot = SO100Robot(calibrate=False, enable_camera=True, camera_index=args.camera_index)
-        with robot.activate():
-            actions = []
-            for i in tqdm(range(ACTIONS_TO_EXECUTE), desc="Loading actions"):
-                action = dataset[i]["action"]
-                img = dataset[i]["observation.images.webcam"].data.numpy()
-                # original shape (3, 480, 640) for image data
-                realtime_img = robot.get_current_img()
-
-                img = img.transpose(1, 2, 0)
-                view_img(img, realtime_img)
-                actions.append(action)
-
-            # plot the actions
-            plt.plot(actions)
-            plt.show()
-
-            print("Done initial pose")
-
-            # Use tqdm to create a progress bar
-            for action in tqdm(actions, desc="Executing actions"):
-                img = robot.get_current_img()
-                view_img(img)
-
-                robot.set_target_state(action)
-                time.sleep(0.05)
-
-            print("Done all actions")
-            robot.go_home()
-            print("Done home")
+        print("Playback from dataset not supported in three camera mode. Please use --use_policy") 

@@ -43,7 +43,7 @@ class Eagle2ChatModel(PreTrainedModel):
     config_class = Eagle2ChatConfig
     main_input_name = "pixel_values"
     _no_split_modules = ["LlamaDecoderLayer"]
-    _supports_flash_attn_2 = True
+    _supports_flash_attn_2 = False
     _supports_sdpa = True
     _supports_flex_attn = False
     _supports_cache_class = False
